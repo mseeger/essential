@@ -1,0 +1,217 @@
+OVERVIEW FST PACKAGE
+--------------------
+
+(1) Introduction
+
+The FST package contains a set of MEX functions FST_XXX which do things
+fast that Matlab is crappily slow in. They do not fix other major
+shortcomings of Matlab, such as the abysmal memory management.
+
+To get it working, compile all functions fst_XXX.c into MEX functions,
+using something like
+  mex -O fst_XXX.c
+on the command line or within a Matlab session. There is no make/configure
+wizardry here. Check the header file mex_helper.h for the system-specific
+part at the beginning and uncomment macros accordingly. Please don't ask
+me if you don't get it compiled on your system, I will not be of help.
+If you figure out a good solution for a common system, let me know.
+
+It is a pretty motley set of functions. This is because I add stuff as
+I need it. If you write your own extensions, send them to me. If I like
+them, I add them to the package.
+
+IMPORTANT NOTE:
+
+Matlab does not allow you to code operators, because there is no
+call-by-reference. An operator is a method
+  oper(x,...)
+after which x is modified. In Matlab, you write
+  x=oper(x,...)
+which involves at least one (often more) unnecessary and expensive copies,
+and at least one temporal memory allocation of the size of x. If x is
+very large, this is a real problem. Think about that if you encouter
+"OUT OF MEMORY" the next time. This restriction holds for MEX functions as
+well.
+
+There is no supported way around this, but an unsupported one. If you
+call a MEX file with an argument x,
+  mex_function(x,...)
+you can actually just overwrite the buffer of x. You can even reshape
+the buffer of x (but see below!). The Mathworks tell you in their
+documentation that what you see as arguments are copies of the variables,
+but this is just not true.
+==> THIS IS NOT SAFE. It is not officially supported in the Matlab
+    documentation, and they may change it in the next version!
+However, very many people rely on this loophole, so they are probably
+not going to close it anytime soon. I suspect their own code relies
+on it.
+Many of the FST functions are operators, making use of this "feature".
+==> However, always keep in mind this can be a potential source of
+    problems!
+
+READ THIS:
+If you use this loophole, i.e. if you use the FST operators, you need to
+be aware of the following problem. Matlab is smart about not physically
+copying variables, as long as they are used a r-values only. This is
+actually quite a nice feature, although a call-by-reference would be much
+nicer. If you write
+  x=y;
+then x is no more than a reference to y, until you change y or x using
+some Matlab command.
+If you use the loophole, you change Matlab variables WITHOUT telling
+Matlab about it. If fst_XXX(x,...) is an operator for x, then
+  x=y;
+  fst_XXX(x,...);
+leaves you with x AND y both being modified, they are the same after the
+call of fst_XXX. This is certainly NOT what you intended. You have to
+FORCE copying:
+  x=y(:,:);
+  fst_XXX(x,...);
+The use of (:,:) forces Matlab to draw a physical copy of y.
+
+ATTENTION:
+The reshaping of an argument x (see FST_RESHAPE) does not work in all cases.
+It seems that
+  fst_reshape(x,d1,d2);
+works if x is a simple variable, but NOT if the argument is a field in a
+structure:
+  fst_reshape(s.x,d1,d2); % DOES NOT WORK!!
+Don't ask me why, and don't ask the Mathworks people, because officially
+they do not support any of this. If you know why, send me a note, I'd be
+curious.
+==> Avoid use of FST_RESHAPE in general, and if you use it, use it for
+    simple (local) variables only.
+
+
+(2) Matrix arguments
+
+Matlab could be seen as an elaborate wrapper around free numerical matrix
+libraries such as LAPACK, which use the BLAS interface for low-level
+matrix functions. The BLAS has a neat matrix storage format, which allows
+you to treat parts of a matrix as another one without intermediate
+copying. Copying is not only a problem for efficiency, but also (and often
+much more) for memory usage. A large fraction of "OUT OF MEMORY" events
+are utterly avoidable.
+
+Many FST_XXX functions support the following extended format for matrix
+arguments. Note that this applies to matrix arguments only, i.e. arguments
+which could potentially be more than vectors. A matrix argument A can be:
+(1) A normal matlab matrix A
+(2) A cell array {ABUFF, [YS XS M N]}
+    This means that A is the rectangular part ABUFF(YS:(YS+M-1),XS:(XS+N-1)).
+    Only this part of ABUFF is accessed by the function, and if a result
+    is written, it is written into this part only. No copying.
+(3) A cell array {ABUFF, [YS XS M N], SCODE}
+    Again, only the part ABUFF(YS:(YS+M-1),XS:(XS+N-1)) is used. SBUFF is
+    a string containing BLAS structure codes. Whether they are used or not,
+    depends on the FST_XXX function. If they are not used, they are simply
+    ignored. The format of SCODE may change in the future, but only through
+    additions of new field. In general, the value ' ' (space) means that
+    the corr. structure code is unspecified. Structure codes imply a pattern
+    for A, and only positions in this pattern are considered part of the
+    argument (only these are read or write accessed). Fields:
+    - 0: UPLO: values 'U' (upper), 'L' (lower)
+      BLAS code. Determines for triangular or symmetric matrices in which
+      triangle of A the argument is stored
+    - 1: DIAG: values 'U' (unit tri.), 'N' (non unit tri.)
+      BLAS code, only in conjunct. with UPLO. A unit triangular matrix has
+      diag. I, and the diagonal of A is not accessed.
+      If UPLO spec., the def. value for unspecif. DIAG is 'N'
+
+The FSTDEBUG_TESTCODE test code suite for the FST package plays around with
+some FSTDEBUG_XXX functions which access arguments in this format.
+
+NOTE: The BLAS also has a neat format for vectors, allowing you to define
+the offset for jumping to the next element. Matlabs a:2:b indexing
+corresponds to offset 2 (but much less efficient), and offset -1 means
+that the vector is stored backwards. This is not supported in the moment.
+
+
+(2) Overview of FST functions
+
+(2.1) Full matrix functions (BLAS, LAPACK, ...)
+
+- FST_DGEMM(C,A,TRA,B,TRB,{ALPHA=1},{BETA=0})
+    C = ALPHA*op(A)*op(B) + BETA*C
+- FST_DSYMM(C,A,B,{ALPHA=1},{BETA=0})
+    C = ALPHA*A*B + BETA*C
+  Exactly one of A, B must be symmetric (UPLO field specif.)
+- FST_DSYRK(C,A,TRS,{ALPHA=1},{BETA=0})
+    C = ALPHA*op(A)*op(A)' + BETA*C
+  C must be symmetric (UPLO field specif.)
+- FST_DTRMM(B,A,LEFT,TRS,{ALPHA=1})
+    B = ALPHA*op(A)*B                        (LEFT==1)
+    B = ALPHA*B*op(A)                        (LEFT==0)
+  A must be triangular (UPLO field specif., DIAG optional)
+- FST_DTRSM(B,A,LEFT,TRS,{ALPHA=1})
+    B = ALPHA*op(A^-1)*B                     (LEFT==1)
+    B = ALPHA*B*op(A^-1)                     (LEFT==0)
+  A must be triangular (UPLO field specif., DIAG optional)
+- DG = FST_DIAGMUL(A,B,TRS,{D})
+    DG = DIAG(op(A)'*op(B))                  (D not given)
+    DG = DIAG(op(A)'*DIAG(D)*op(B))
+- FST_MULDIAG(A,D,LEFT)
+    A = A*DIAG(D)                            (LEFT==0)
+    A = DIAG(D)*A                            (LEFT==1)
+- FST_PERMUTE(A,PERM,COL)
+    A(:,PERM) = A                            (COL==1)
+    A(PERM,:) = A                            (COL==0)
+- FST_RESHAPE(A,M,N)
+    A = RESHAPE(A,M,N)
+  A must be matrix, not cell array. Requires that buffer for A
+  has >= M*N entries. If > M*N, entries are lost. Operation is
+  in place.
+  ATTENTION: UNSAFE COMMAND! If A is a field in a structure,
+  FST_RESHAPE does not work. Problem not resolved so far! Use only
+  if A is a simple (local) variable. If you want to play safe, don't
+  use it at all.
+- FST_ADDVEC(C,X,COL,{ALPHA=1})
+    C = ALPHA*X*1' + C                       (COL==1)
+    C = ALPHA*1*X' + C                       (COL==0)
+  X is vector, 1 is vector of all ones. Structure codes ignored.
+- FST_FLIPDIMS(A,N)
+  Operates on A, which is of size N*D1-by-D2. The flat buffer of
+  A is taken as N-by-D1-by-D2 tensor, and dimensions 2 and 3
+  are exchanged. The resulting matrix is reshaped to have D1
+  columns. Extension of transposition (N==1). In-place variant of
+    RESHAPE(PERMUTE(RESHAPE(A,N,D1,D2),[1 3 2]),N*D2,D1)
+  but Matlab PERMUTE is not in-place.
+  ATTENTION: The final reshape to size N*D2-by-D1 can fail, see
+  FST_RESHAPE.
+- INFO = FST_INVCHOL(FACT)
+  Overwrites Cholesky factor of matrix A by inverse of A. The
+  factor is given in FACT, which is upper or lower triangular
+  (UPLO field required). The inverse overwrites FACT, but just the
+  triangle occupied by the factor is accessed.
+  Uses the LAPACK routine DPOTRI.
+
+(2.2) Sparse matrix functions
+
+NOTE: Sparse matrices use the Matlab sparse matrix format, and you
+cannot use the FST argument extension for them.
+
+- FST_DSPAMM(C,A,B,TRA,{ALPHA=1},{BETA=0})
+    C = ALPHA*op(A)*B + BETA*C
+  A is a sparse matrix, C and B are dense. Structure codes ignored.
+- FST_DSPAMMT(C,A,B,{ALPHA=1},{BETA=0})
+    C = ALPHA*A*A'*B + BETA*C
+  A is a sparse matrix, C and B are dense. Structure codes ignored.
+  Intermed. storage of size COLS(B) is used, but A'*B does not have
+  to be stored.
+- FST_DSPAMMT2(D,A,B,C,{ALPHA=1},{BETA=0})
+    D = ALPHA*A*B'*C + BETA*D
+  A, B are sparse matrices with the same number of cols, D, C are dense.
+  Structure codes are ignored. Intermed. storage of size COLS(A) is used,
+  but B'*C does not have to be stored.
+
+(2.3) Other functions
+
+- Y = FST_SUMPOS(X,IND,NY)
+  Y is obtained by starting from 0 of size YN, then adding X(j)
+  to Y(IND(j)) for all j.
+- RET = FST_ACCUMULATE(A,IV,B,{BTR})
+  Specialized accumulation function. A is NN-by-NC matrix, IV an
+  NN index vector, B cell array of index vectors. For each i,
+  RET(i) is the sum of A(i,j), where j runs over B{IV(i)}.
+  If BTR is given, it is an additional index. In this case, RET(i)
+  is the sum of A(i,BTR(j)), where j runs over B{IV(i)}.
